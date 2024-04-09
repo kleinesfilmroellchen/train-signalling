@@ -1,5 +1,7 @@
 //! Module for parsing serial commands.
 
+use crate::signals::KsSignalAspect;
+
 use super::signals::HVMainSignalAspect;
 use super::SIGNAL_ID;
 
@@ -15,7 +17,7 @@ const BUFFER_SIZES: usize = 128;
 pub fn get_next_command(
     reader: &mut impl Read<u8>,
     writer: &mut (impl Write<u8> + uWrite),
-) -> HVMainSignalAspect {
+) -> (HVMainSignalAspect, KsSignalAspect) {
     loop {
         let mut line = ArrayVec::new();
         let mut before_comment = line.as_slice();
@@ -55,11 +57,11 @@ pub fn get_next_command(
             }
             Some(command) => {
                 return match command {
-                    b"A" => HVMainSignalAspect::Deactivated,
-                    b"D" => HVMainSignalAspect::Dark,
-                    b"0" => HVMainSignalAspect::Stop,
-                    b"1" => HVMainSignalAspect::Proceed,
-                    b"2" => HVMainSignalAspect::ProceedSlow,
+                    b"A" => (HVMainSignalAspect::Deactivated, KsSignalAspect::Deactivated),
+                    b"D" => (HVMainSignalAspect::Dark, KsSignalAspect::Dark),
+                    b"0" => (HVMainSignalAspect::Stop, KsSignalAspect::Stop),
+                    b"1" => (HVMainSignalAspect::Proceed, KsSignalAspect::Proceed),
+                    b"2" => (HVMainSignalAspect::ProceedSlow, KsSignalAspect::ExpectStop),
                     _ => {
                         let _ = ufmt::uwriteln!(
                             writer,

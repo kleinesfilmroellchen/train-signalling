@@ -389,3 +389,187 @@ impl<Error, PinType: OutputPin<Error = Error>> HVSignalGroup<Error, PinType> {
             && self.announcement_signal.supports_aspect(aspect.into())
     }
 }
+
+/// A signal in the Ks signalling system.
+///
+/// # Type parameters
+///
+/// This type is generic over the kind of output pin used. Its parameters additionally include the output pin’s error type (which some functions also return).
+pub struct KsSignal<Error, PinType: OutputPin<Error = Error>> {
+    other_pins: ExtraKsPins<Error, PinType>,
+    // Green lamp.
+    green_lamp: PinType,
+    // Notice lamp, used for Deactivated state.
+    notice_lamp: Option<PinType>,
+}
+
+/// A signal aspect in the Ks signalling system.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum KsSignalAspect {
+    // Hp0: Halt
+    Stop,
+    // Ks1: Fahrt, oder Geschwindigkeitsbeschränkung erwarten
+    Proceed,
+    // Ks2: Halt erwarten
+    ExpectStop,
+    // Signal betrieblich abgeschaltet, Kennlicht aktiv.
+    Deactivated,
+    // Signal dunkel, da übergeordnete Zugbeeinflussung (LZB oder ETCS) statt dem Lichtsignal gültig ist.
+    Dark,
+}
+
+enum ExtraKsPins<Error, PinType: OutputPin<Error = Error>> {
+    MultiBlockSignal {
+        red_lamp: PinType,
+        yellow_lamp: PinType,
+    },
+    MainSignal {
+        red_lamp: PinType,
+    },
+    AnnouncementSignal {
+        yellow_lamp: PinType,
+    },
+}
+
+impl<Error, PinType: OutputPin<Error = Error>> ExtraKsPins<Error, PinType> {
+    pub fn red_lamp(&mut self) -> Option<&mut PinType> {
+        match self {
+            ExtraKsPins::MultiBlockSignal { red_lamp, .. } => Some(red_lamp),
+            ExtraKsPins::MainSignal { red_lamp } => Some(red_lamp),
+            ExtraKsPins::AnnouncementSignal { .. } => None,
+        }
+    }
+    pub fn yellow_lamp(&mut self) -> Option<&mut PinType> {
+        match self {
+            ExtraKsPins::MultiBlockSignal { yellow_lamp, .. } => Some(yellow_lamp),
+            ExtraKsPins::MainSignal { .. } => None,
+            ExtraKsPins::AnnouncementSignal { yellow_lamp } => Some(yellow_lamp),
+        }
+    }
+    pub fn has_red_lamp(&self) -> bool {
+        match self {
+            ExtraKsPins::MultiBlockSignal { .. } => true,
+            ExtraKsPins::MainSignal { .. } => true,
+            ExtraKsPins::AnnouncementSignal { .. } => false,
+        }
+    }
+    pub fn has_yellow_lamp(&self) -> bool {
+        match self {
+            ExtraKsPins::MultiBlockSignal { .. } => true,
+            ExtraKsPins::MainSignal { .. } => false,
+            ExtraKsPins::AnnouncementSignal { .. } => true,
+        }
+    }
+}
+
+impl<Error, PinType: OutputPin<Error = Error>> KsSignal<Error, PinType> {
+    pub fn new_main(red_lamp: PinType, green_lamp: PinType) -> Self {
+        Self {
+            other_pins: ExtraKsPins::MainSignal { red_lamp },
+            green_lamp,
+            notice_lamp: None,
+        }
+    }
+    pub fn new_announcement(green_lamp: PinType, yellow_lamp: PinType) -> Self {
+        Self {
+            other_pins: ExtraKsPins::AnnouncementSignal { yellow_lamp },
+            green_lamp,
+            notice_lamp: None,
+        }
+    }
+    pub fn new_multi_block(red_lamp: PinType, green_lamp: PinType, yellow_lamp: PinType) -> Self {
+        Self {
+            other_pins: ExtraKsPins::MultiBlockSignal {
+                red_lamp,
+                yellow_lamp,
+            },
+            green_lamp,
+            notice_lamp: None,
+        }
+    }
+
+    /// Adds a notice lamp to this main signal.
+    pub fn with_notice_lamp(mut self, notice_lamp: PinType) -> Self {
+        self.notice_lamp = Some(notice_lamp);
+        self
+    }
+
+    /// Returns whether this signal supports the given aspect, since some aspects require optional lights.
+    pub fn supports_aspect(&self, aspect: KsSignalAspect) -> bool {
+        match aspect {
+            // always supported
+            KsSignalAspect::Dark | KsSignalAspect::Proceed => true,
+            KsSignalAspect::Stop => self.other_pins.has_red_lamp(),
+            KsSignalAspect::ExpectStop => self.other_pins.has_yellow_lamp(),
+            KsSignalAspect::Deactivated => self.notice_lamp.is_some(),
+        }
+    }
+
+    fn switch_optionally(pin: Option<&mut PinType>, state: PinState) -> Result<(), Error> {
+        pin.map(|pin| pin.set_state(state)).transpose()?;
+        Ok(())
+    }
+
+    /// Switches this signal to the given aspect.
+    ///
+    /// # Errors
+    /// Errors are returned from the HAL’s digital I/O functions.
+    ///
+    /// # Panics
+    /// This function will panic if an unsupported aspect is set on this signal due to missing lamps. This condition is considered a logic bug; user code must ensure that signals are only ever used with aspects that they are designed for. The function [`Self::supports_aspect`] can be used to test whether a signal supports a certain aspect beforehand.
+    pub fn switch_to_aspect(&mut self, aspect: KsSignalAspect) -> Result<(), Error> {
+        // to ensure safety, first switch on the new aspect’s light,
+        // then switch off any previously enabled aspect lights.
+        // this may lead to an intermittent unclear aspect, but in that case the driver has to assume stop aspect anyways.
+        match aspect {
+            KsSignalAspect::Stop => {
+                if !self.other_pins.has_red_lamp() {
+                    panic!("illegal aspect for this light, no red available");
+                }
+                Self::switch_optionally(self.other_pins.red_lamp(), PinState::High)?;
+
+                self.green_lamp.set_low()?;
+                Self::switch_optionally(self.other_pins.yellow_lamp(), PinState::Low)?;
+                Self::switch_optionally(self.notice_lamp.as_mut(), PinState::Low)?;
+            }
+            KsSignalAspect::Proceed => {
+                self.green_lamp.set_high()?;
+
+                Self::switch_optionally(self.other_pins.red_lamp(), PinState::Low)?;
+                Self::switch_optionally(self.other_pins.yellow_lamp(), PinState::Low)?;
+                Self::switch_optionally(self.notice_lamp.as_mut(), PinState::Low)?;
+            }
+            KsSignalAspect::ExpectStop => {
+                // logic bug, since user code should ensure to never try to enable illegal aspects on signals that don’t support them
+                if !self.other_pins.has_yellow_lamp() {
+                    panic!("illegal aspect for this light, no yellow available");
+                }
+
+                // switch yellow on before green to avoid transient proceed aspect (whose speed would be too high)
+                Self::switch_optionally(self.other_pins.yellow_lamp(), PinState::High)?;
+
+                self.green_lamp.set_low()?;
+                Self::switch_optionally(self.other_pins.red_lamp(), PinState::Low)?;
+                Self::switch_optionally(self.notice_lamp.as_mut(), PinState::Low)?;
+            }
+            KsSignalAspect::Deactivated => {
+                if self.notice_lamp.is_none() {
+                    panic!("illegal aspect for this light, no notice lamp available");
+                }
+
+                Self::switch_optionally(self.notice_lamp.as_mut(), PinState::High)?;
+
+                Self::switch_optionally(self.other_pins.yellow_lamp(), PinState::Low)?;
+                self.green_lamp.set_low()?;
+                Self::switch_optionally(self.other_pins.red_lamp(), PinState::Low)?;
+            }
+            KsSignalAspect::Dark => {
+                Self::switch_optionally(self.notice_lamp.as_mut(), PinState::Low)?;
+                self.green_lamp.set_low()?;
+                Self::switch_optionally(self.other_pins.yellow_lamp(), PinState::Low)?;
+                Self::switch_optionally(self.other_pins.red_lamp(), PinState::Low)?;
+            }
+        }
+        Ok(())
+    }
+}

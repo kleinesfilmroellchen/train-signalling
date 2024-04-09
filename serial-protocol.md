@@ -8,13 +8,19 @@ The serial protocol follows a simple format, where each command is separated by 
 
 The signal ID serves to differentiate different signal controllers, which may all be listening on the same serial connection. The signal ID corresponds to the control box’s identifier for the signal, such as `A` for the first station entry signal or `P2` for an intermediate signal on track 2.
 
-The signal ID is separated by the signal state command with a colon. The following commands are currently supported:
+The signal ID is separated by the signal state command with a colon. The following commands are currently supported for H/V signals:
 
 - `0`: Switch to Hp0, i.e. Stop.
 - `1`: Switch to Hp1, i.e. Proceed.
 - `2`: Switch to Hp2, i.e. Proceed Slowly. Separate speed signaling control is currently not supported and may be added in the future; though the signal might of course have a fixed Zs3&Zs3v speed sign.
 - `A`: Disable the signal, since it is not currently needed. A notification light will be illuminated (and one must exist for this command to succeed).
 - `D`: Switch the signal completely dark, no lamps illuminated.
+
+For Ks signals, the main (numbered) aspects have a different meaning:
+
+- `0`: Switch to Hp0, Stop.
+- `1`: Switch to Ks1, Proceed.
+- `2`: Switch to Ks2, Expect Stop.
 
 For compatibility, all characters beyond the first should be disregarded.
 
