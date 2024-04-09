@@ -1,7 +1,7 @@
 train-signalling
 ================
 
-Rust project for the _Arduino Nano_.
+Train signal controller that receives commands via Serial and sets up its connected signals accordingly. Just a little demo thing I might need in a little while.
 
 ## Build Instructions
 1. Install prerequisites as described in the [`avr-hal` README] (`avr-gcc`, `avr-libc`, `avrdude`, [`ravedude`]).
