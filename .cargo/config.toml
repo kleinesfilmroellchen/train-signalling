@@ -5,4 +5,4 @@ target = "avr-specs/avr-atmega328p.json"
 runner = "ravedude uno -cb 57600"
 
 [unstable]
-build-std = ["core"]
+build-std = ["core", "alloc"]

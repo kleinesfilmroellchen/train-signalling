@@ -5,13 +5,11 @@ use crate::signals::KsSignalAspect;
 use super::signals::HVMainSignalAspect;
 use super::SIGNAL_ID;
 
-use arrayvec::ArrayVec;
+use alloc::vec::Vec;
 use ufmt::uWrite;
 
 // TODO: Switch to embedded_io once arduino-hal uses that.
 use embedded_hal_legacy::serial::{Read, Write};
-
-const BUFFER_SIZES: usize = 128;
 
 /// Blocks until it can receive the next valid change command from the serial interface.
 pub fn get_next_command(
@@ -19,7 +17,7 @@ pub fn get_next_command(
     writer: &mut (impl Write<u8> + uWrite),
 ) -> (HVMainSignalAspect, KsSignalAspect) {
     loop {
-        let mut line = ArrayVec::new();
+        let mut line = Vec::new();
         let mut before_comment = line.as_slice();
         while before_comment.is_empty() {
             line = read_line_or_to_buffer_capacity(reader);
@@ -81,18 +79,15 @@ pub fn get_next_command(
 /// - the buffer capacity is exceeded
 /// - any newline delimiter is reached
 /// - a reading error occurs.
-fn read_line_or_to_buffer_capacity(reader: &mut impl Read<u8>) -> ArrayVec<u8, BUFFER_SIZES> {
-    let mut buffer = ArrayVec::new();
+fn read_line_or_to_buffer_capacity(reader: &mut impl Read<u8>) -> Vec<u8> {
+    let mut buffer = Vec::new();
     loop {
         let byte = match nb::block!(reader.read()) {
             Err(_) => continue,
             Ok(byte) => byte,
         };
         if ![b'\n', b'\r'].contains(&byte) {
-            match buffer.try_push(byte) {
-                Err(_) => break,
-                Ok(_) => {}
-            }
+            buffer.push(byte);
         } else {
             break;
         }

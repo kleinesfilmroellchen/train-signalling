@@ -2,6 +2,8 @@
 #![no_main]
 #![feature(let_chains)]
 
+extern crate alloc;
+
 use arduino_hal::prelude::_unwrap_infallible_UnwrapInfallible;
 use arduino_hal::Eeprom;
 use commands::get_next_command;
@@ -9,6 +11,11 @@ use panic_halt as _;
 use signals::HVMainSignalAspect;
 use signals::HVSignalGroup;
 use signals::KsSignal;
+
+use embedded_alloc::Heap;
+
+#[global_allocator]
+static HEAP: Heap = Heap::empty();
 
 pub mod commands;
 pub mod signals;
@@ -26,6 +33,13 @@ pub const HAS_REDUCED_SIGNAL_DISTANCE: bool = false;
 
 #[arduino_hal::entry]
 fn main() -> ! {
+    {
+        use core::mem::MaybeUninit;
+        const HEAP_SIZE: usize = 1024;
+        static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
+        unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
+    }
+
     let dp = arduino_hal::Peripherals::take().unwrap();
     let pins = arduino_hal::pins!(dp);
     let serial = arduino_hal::default_serial!(dp, pins, 57600);
