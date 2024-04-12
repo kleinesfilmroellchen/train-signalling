@@ -4,10 +4,13 @@
 
 extern crate alloc;
 
+use core::panic::PanicInfo;
+
+use alloc::string::String;
+use arduino_hal::hal::Wdt;
 use arduino_hal::prelude::_unwrap_infallible_UnwrapInfallible;
 use arduino_hal::Eeprom;
 use commands::get_next_command;
-use panic_halt as _;
 use signals::HVMainSignalAspect;
 use signals::HVSignalGroup;
 use signals::KsSignal;
@@ -31,6 +34,36 @@ pub const HAS_DEACTIVATION_CAPABILITY: bool = true;
 // Whether the announcement signal has reduced distance to the main signal.
 pub const HAS_REDUCED_SIGNAL_DISTANCE: bool = false;
 
+#[panic_handler]
+fn panic(panic_info: &PanicInfo) -> ! {
+    // SAFETY: In a panic handler, so nothing else can be accessing the peripherals.
+    let dp = unsafe { arduino_hal::Peripherals::steal() };
+    let pins = arduino_hal::pins!(dp);
+    let mut serial = arduino_hal::default_serial!(dp, pins, 57600);
+    // SAFETY: Cannot currently return None.
+    let location = unsafe { panic_info.location().unwrap_unchecked() };
+    let maybe_str_payload = panic_info.payload().downcast_ref::<&'static str>();
+    let maybe_string_payload = panic_info.payload().downcast_ref::<String>();
+    let payload = if let Some(str_payload) = maybe_str_payload {
+        *str_payload
+    } else if let Some(string_payload) = maybe_string_payload {
+        string_payload
+    } else {
+        "<non-string message>"
+    };
+    let _ = ufmt::uwriteln!(
+        serial,
+        "panic in {} line {}: {}",
+        location.file(),
+        location.line(),
+        payload
+    );
+
+    // FIXME: I found no good way of manually resetting the system.
+    // We rely on the watchdog timer to reset us after a short while.
+    loop {}
+}
+
 #[arduino_hal::entry]
 fn main() -> ! {
     {
@@ -45,7 +78,9 @@ fn main() -> ! {
     let serial = arduino_hal::default_serial!(dp, pins, 57600);
     let (mut serial_reader, mut serial_writer) = serial.split();
     let mut eeprom = Eeprom::new(dp.EEPROM);
+    let mut wdt = Wdt::new(dp.WDT, &dp.CPU.mcusr);
 
+    wdt.start(arduino_hal::hal::wdt::Timeout::Ms1000).unwrap();
     let mut signal_group = HVSignalGroup::new(
         pins.d2.into_output().downgrade(),
         pins.d4.into_output().downgrade(),
@@ -89,6 +124,7 @@ fn main() -> ! {
     );
 
     loop {
+        wdt.feed();
         let (next_hv_aspect, next_ks_aspect) =
             get_next_command(&mut serial_reader, &mut serial_writer);
         if !signal_group.supports_aspect(next_hv_aspect) {
