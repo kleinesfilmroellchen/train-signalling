@@ -1,96 +1,91 @@
 //! Module for parsing serial commands.
 
+use core::convert::Infallible;
+
+use crate::signals::HVMainSignalAspect;
 use crate::signals::KsSignalAspect;
+use crate::SIGNAL_ID;
 
-use super::signals::HVMainSignalAspect;
-use super::SIGNAL_ID;
+use arrayvec::ArrayString;
 
-use alloc::vec::Vec;
-use ufmt::uWrite;
+/// If the error is None, the command is empty, or not intended for this signal, and can be ignored.
+/// If the error is a string, it’s an error response to be sent back to the command sender.
+pub struct CommandError(pub(crate) Option<ArrayString<128>>);
 
-// TODO: Switch to embedded_io once arduino-hal uses that.
-use embedded_hal_legacy::serial::{Read, Write};
+impl Default for CommandError {
+    fn default() -> Self {
+        Self(None)
+    }
+}
 
-/// Blocks until it can receive the next valid change command from the serial interface.
-pub fn get_next_command(
-    reader: &mut impl Read<u8>,
-    writer: &mut (impl Write<u8> + uWrite),
-) -> (HVMainSignalAspect, KsSignalAspect) {
-    loop {
-        let mut line = Vec::new();
-        let mut before_comment = line.as_slice();
-        while before_comment.is_empty() {
-            line = read_line_or_to_buffer_capacity(reader);
-            before_comment = line
-                .split(|c| *c == b'#')
-                .next()
-                .unwrap_or_else(|| line.as_slice());
+impl ufmt::uWrite for CommandError {
+    type Error = Infallible;
+
+    fn write_str(&mut self, s: &str) -> Result<(), Self::Error> {
+        match self.0 {
+            Some(ref mut string) => string.push_str(s),
+            None => self.0 = Some(ArrayString::from(s).unwrap()),
         }
-        let mut sections = before_comment.split(|c| *c == b':');
-        match sections.next() {
-            Some(signal_id) => {
-                if signal_id != SIGNAL_ID.as_bytes() {
-                    continue;
-                }
-            }
-            None => {
-                let _ = ufmt::uwriteln!(
-                    writer,
-                    "{}:E:0#Missing signal ID in {:?}",
-                    SIGNAL_ID,
-                    before_comment
-                );
-                continue;
-            }
-        }
-        match sections.next() {
-            None => {
-                let _ = ufmt::uwriteln!(
-                    writer,
-                    "{}:E:0#Missing command in {:?}",
-                    SIGNAL_ID,
-                    before_comment
-                );
-                continue;
-            }
-            Some(command) => {
-                return match command {
-                    b"A" => (HVMainSignalAspect::Deactivated, KsSignalAspect::Deactivated),
-                    b"D" => (HVMainSignalAspect::Dark, KsSignalAspect::Dark),
-                    b"0" => (HVMainSignalAspect::Stop, KsSignalAspect::Stop),
-                    b"1" => (HVMainSignalAspect::Proceed, KsSignalAspect::Proceed),
-                    b"2" => (HVMainSignalAspect::ProceedSlow, KsSignalAspect::ExpectStop),
-                    _ => {
-                        let _ = ufmt::uwriteln!(
-                            writer,
-                            "{}:E:0#Unknown command {:?}",
-                            SIGNAL_ID,
-                            command
-                        );
-                        continue;
-                    }
-                };
-            }
+        Ok(())
+    }
+}
+
+impl ufmt::uDisplay for CommandError {
+    fn fmt<W>(&self, formatter: &mut ufmt::Formatter<'_, W>) -> Result<(), W::Error>
+    where
+        W: ufmt::uWrite + ?Sized,
+    {
+        match self.0 {
+            Some(string) => formatter.write_str(string.as_str()),
+            None => Ok(()),
         }
     }
 }
 
-/// Reads from the input reader until either:
-/// - the buffer capacity is exceeded
-/// - any newline delimiter is reached
-/// - a reading error occurs.
-fn read_line_or_to_buffer_capacity(reader: &mut impl Read<u8>) -> Vec<u8> {
-    let mut buffer = Vec::new();
-    loop {
-        let byte = match nb::block!(reader.read()) {
-            Err(_) => continue,
-            Ok(byte) => byte,
-        };
-        if ![b'\n', b'\r'].contains(&byte) {
-            buffer.push(byte);
-        } else {
-            break;
+macro_rules! format_error {
+    ($($t:tt)*) => {{
+        let mut e = CommandError::default();
+        ufmt::uwriteln!(
+            e,
+            $($t)*
+        ).unwrap();
+        Err(e)
+    }};
+}
+
+/// Parses the next command from the single line input given.
+///
+/// The result is either
+/// - a pair of aspects; the aspect that the command wants this signal to switch to, or
+/// - an optional error.
+pub fn get_next_command(line: &[u8]) -> Result<(HVMainSignalAspect, KsSignalAspect), CommandError> {
+    let before_comment = line.split(|c| *c == b'#').next().unwrap_or_else(|| line).trim_ascii();
+    let mut sections = before_comment.split(|c| *c == b':');
+    match sections.next() {
+        Some(signal_id) => {
+            if signal_id != SIGNAL_ID.as_bytes() {
+                return Err(CommandError::default());
+            }
+        }
+        None => {
+            return format_error!(
+                "{}:E:0#Missing signal ID in {:?}",
+                SIGNAL_ID,
+                before_comment
+            );
         }
     }
-    buffer
+    match sections.next() {
+        None => return format_error!("{}:E:0#Missing command in {:?}", SIGNAL_ID, before_comment),
+        Some(command) => {
+            return match command {
+                b"A" => Ok((HVMainSignalAspect::Deactivated, KsSignalAspect::Deactivated)),
+                b"D" => Ok((HVMainSignalAspect::Dark, KsSignalAspect::Dark)),
+                b"0" => Ok((HVMainSignalAspect::Stop, KsSignalAspect::Stop)),
+                b"1" => Ok((HVMainSignalAspect::Proceed, KsSignalAspect::Proceed)),
+                b"2" => Ok((HVMainSignalAspect::ProceedSlow, KsSignalAspect::ExpectStop)),
+                _ => return format_error!("{}:E:0#Unknown command {:?}", SIGNAL_ID, command),
+            };
+        }
+    }
 }
