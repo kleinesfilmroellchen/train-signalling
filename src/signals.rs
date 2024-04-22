@@ -383,9 +383,15 @@ impl<Error, PinType: OutputPin<Error = Error>> HVSignalGroup<Error, PinType> {
         Ok(())
     }
 
-    pub fn switch_to_aspect(&mut self, aspect: HVMainSignalAspect) -> Result<(), Error> {
+    pub fn switch_to_aspect(&mut self, aspect: HVMainSignalAspect, delay: &mut impl embedded_hal::delay::DelayNs) -> Result<(), Error> {
+        // for safety, the announcement signal must show stop at least while the main signal is switching
+        self.announcement_signal.switch_to_aspect(HVAnnouncementSignalAspect::ExpectStop)?;
         // switch main signal first to make sure that the announcement signal never announces a main signal aspect that isn’t currently valid.
         self.main_signal.switch_to_aspect(aspect)?;
+        // if necessary, wait until the main signal aspect has settled
+        if aspect != HVMainSignalAspect::Stop {
+            delay.delay_ms(800);
+        }
         self.announcement_signal.switch_to_aspect(aspect.into())?;
         Self::switch_optionally(
             &mut self.repeater_signal_notice_lamp,

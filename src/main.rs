@@ -9,6 +9,7 @@ use core::sync::atomic::Ordering;
 use arduino_hal::hal::usart::Event;
 use arduino_hal::hal::Wdt;
 use arduino_hal::prelude::*;
+use arduino_hal::Delay;
 use arduino_hal::Eeprom;
 use arrayvec::ArrayVec;
 use avr_device::interrupt;
@@ -96,7 +97,7 @@ fn main() -> ! {
     let mut eeprom = Eeprom::new(dp.EEPROM);
     let mut wdt = Wdt::new(dp.WDT, &dp.CPU.mcusr);
 
-    wdt.start(arduino_hal::hal::wdt::Timeout::Ms1000).unwrap();
+    wdt.start(arduino_hal::hal::wdt::Timeout::Ms4000).unwrap();
     serial.listen(Event::RxComplete);
     interrupt::free(|cs| {
         *SERIAL.borrow(cs).borrow_mut() = Some(serial);
@@ -127,19 +128,16 @@ fn main() -> ! {
     }
 
     signal_group
-        .switch_to_aspect(signals::HVMainSignalAspect::Stop)
+        .switch_to_aspect(signals::HVMainSignalAspect::Stop, &mut Delay::new())
         .unwrap_infallible();
 
     let mut saved_aspect = [0];
     eeprom.read(0, &mut saved_aspect).unwrap();
-    with_serial(|serial| {
-        serial.write_byte(saved_aspect[0]);
-    });
     if let Some(saved_aspect) = HVMainSignalAspect::from_command_id(&saved_aspect)
         && signal_group.supports_aspect(saved_aspect)
     {
         signal_group
-            .switch_to_aspect(saved_aspect)
+            .switch_to_aspect(saved_aspect, &mut Delay::new())
             .unwrap_infallible();
     }
 
@@ -173,7 +171,7 @@ fn main() -> ! {
                             .write(0, next_hv_aspect.command_id().as_bytes())
                             .unwrap();
                         signal_group
-                            .switch_to_aspect(next_hv_aspect)
+                            .switch_to_aspect(next_hv_aspect, &mut Delay::new())
                             .unwrap_infallible();
                         serial_writeln!("{}:A:{}", SIGNAL_ID, next_hv_aspect.command_id());
                     }
