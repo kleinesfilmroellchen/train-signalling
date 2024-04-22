@@ -2,8 +2,6 @@
 
 use core::convert::Infallible;
 
-use crate::signals::HVMainSignalAspect;
-use crate::signals::KsSignalAspect;
 use crate::SIGNAL_ID;
 
 use arrayvec::ArrayString;
@@ -53,13 +51,26 @@ macro_rules! format_error {
     }};
 }
 
+#[repr(u8)]
+pub enum AspectCommand {
+    Zero = 0,
+    One = 1,
+    Two = 2,
+    Deactivated = b'A',
+    Dark = b'D',
+}
+
 /// Parses the next command from the single line input given.
 ///
 /// The result is either
 /// - a pair of aspects; the aspect that the command wants this signal to switch to, or
 /// - an optional error.
-pub fn get_next_command(line: &[u8]) -> Result<(HVMainSignalAspect, KsSignalAspect), CommandError> {
-    let before_comment = line.split(|c| *c == b'#').next().unwrap_or_else(|| line).trim_ascii();
+pub fn get_next_command(line: &[u8]) -> Result<AspectCommand, CommandError> {
+    let before_comment = line
+        .split(|c| *c == b'#')
+        .next()
+        .unwrap_or_else(|| line)
+        .trim_ascii();
     let mut sections = before_comment.split(|c| *c == b':');
     match sections.next() {
         Some(signal_id) => {
@@ -79,11 +90,11 @@ pub fn get_next_command(line: &[u8]) -> Result<(HVMainSignalAspect, KsSignalAspe
         None => return format_error!("{}:E:0#Missing command in {:?}", SIGNAL_ID, before_comment),
         Some(command) => {
             return match command {
-                b"A" => Ok((HVMainSignalAspect::Deactivated, KsSignalAspect::Deactivated)),
-                b"D" => Ok((HVMainSignalAspect::Dark, KsSignalAspect::Dark)),
-                b"0" => Ok((HVMainSignalAspect::Stop, KsSignalAspect::Stop)),
-                b"1" => Ok((HVMainSignalAspect::Proceed, KsSignalAspect::Proceed)),
-                b"2" => Ok((HVMainSignalAspect::ProceedSlow, KsSignalAspect::ExpectStop)),
+                b"A" => Ok(AspectCommand::Deactivated),
+                b"D" => Ok(AspectCommand::Dark),
+                b"0" => Ok(AspectCommand::Zero),
+                b"1" => Ok(AspectCommand::One),
+                b"2" => Ok(AspectCommand::Two),
                 _ => return format_error!("{}:E:0#Unknown command {:?}", SIGNAL_ID, command),
             };
         }

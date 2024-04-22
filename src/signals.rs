@@ -1,6 +1,8 @@
 use embedded_hal::digital::OutputPin;
 use embedded_hal::digital::PinState;
 
+use crate::commands::AspectCommand;
+
 /// An optical main signal aspect in the H/V signalling system.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum HVMainSignalAspect {
@@ -35,6 +37,18 @@ impl HVMainSignalAspect {
             b"A" => Some(Self::Deactivated),
             b"D" => Some(Self::Dark),
             _ => None,
+        }
+    }
+}
+
+impl From<AspectCommand> for HVMainSignalAspect {
+    fn from(value: AspectCommand) -> Self {
+        match value {
+            AspectCommand::Zero => Self::Stop,
+            AspectCommand::One => Self::Proceed,
+            AspectCommand::Two => Self::ProceedSlow,
+            AspectCommand::Deactivated => Self::Deactivated,
+            AspectCommand::Dark => Self::Dark,
         }
     }
 }

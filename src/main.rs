@@ -2,13 +2,10 @@
 #![no_main]
 #![feature(let_chains, abi_avr_interrupt, byte_slice_trim_ascii)]
 
-extern crate alloc;
-
 use core::cell::RefCell;
 use core::sync::atomic::compiler_fence;
 use core::sync::atomic::Ordering;
 
-use alloc::vec::Vec;
 use arduino_hal::hal::usart::Event;
 use arduino_hal::hal::Wdt;
 use arduino_hal::prelude::*;
@@ -20,14 +17,8 @@ use commands::get_next_command;
 use nb::Error;
 use signals::HVMainSignalAspect;
 use signals::HVSignalGroup;
-use signals::KsSignal;
-
-use embedded_alloc::Heap;
 
 use crate::commands::CommandError;
-
-#[global_allocator]
-static HEAP: Heap = Heap::empty();
 
 pub mod commands;
 pub mod signals;
@@ -39,7 +30,7 @@ pub const SIGNAL_ID: &str = "F";
 // Whether the signal can show a slow aspect.
 pub const HAS_SLOW_ASPECT: bool = true;
 // Whether the signal has the capability to be deactivated with an indicator light.
-pub const HAS_DEACTIVATION_CAPABILITY: bool = true;
+pub const HAS_DEACTIVATION_CAPABILITY: bool = false;
 // Whether the announcement signal has reduced distance to the main signal.
 pub const HAS_REDUCED_SIGNAL_DISTANCE: bool = false;
 
@@ -98,16 +89,9 @@ macro_rules! serial_writeln {
 
 #[arduino_hal::entry]
 fn main() -> ! {
-    {
-        use core::mem::MaybeUninit;
-        const HEAP_SIZE: usize = 1024;
-        static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
-        unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
-    }
-
     let dp = arduino_hal::Peripherals::take().unwrap();
     let pins = arduino_hal::pins!(dp);
-    let serial = arduino_hal::default_serial!(dp, pins, 9600);
+    let serial = arduino_hal::default_serial!(dp, pins, 57600);
     let serial = share_serial_port_with_panic(serial);
     let mut eeprom = Eeprom::new(dp.EEPROM);
     let mut wdt = Wdt::new(dp.WDT, &dp.CPU.mcusr);
@@ -118,15 +102,15 @@ fn main() -> ! {
         *SERIAL.borrow(cs).borrow_mut() = Some(serial);
     });
     compiler_fence(Ordering::SeqCst);
-    unsafe { avr_device::interrupt::enable() };
+    unsafe { interrupt::enable() };
 
     let mut signal_group = HVSignalGroup::new(
-        pins.d2.into_output().downgrade(),
-        pins.d4.into_output().downgrade(),
-        pins.d5.into_output().downgrade(),
-        pins.d6.into_output().downgrade(),
         pins.d7.into_output().downgrade(),
         pins.d8.into_output().downgrade(),
+        pins.d4.into_output().downgrade(),
+        pins.d2.into_output().downgrade(),
+        pins.d5.into_output().downgrade(),
+        pins.d3.into_output().downgrade(),
     );
     if HAS_DEACTIVATION_CAPABILITY {
         signal_group = signal_group.with_deactivation_capability(
@@ -135,7 +119,7 @@ fn main() -> ! {
         );
     }
     if HAS_SLOW_ASPECT {
-        signal_group = signal_group.with_slow_aspect(pins.d3.into_output().downgrade());
+        signal_group = signal_group.with_slow_aspect(pins.d6.into_output().downgrade());
     }
 
     if HAS_REDUCED_SIGNAL_DISTANCE {
@@ -148,6 +132,9 @@ fn main() -> ! {
 
     let mut saved_aspect = [0];
     eeprom.read(0, &mut saved_aspect).unwrap();
+    with_serial(|serial| {
+        serial.write_byte(saved_aspect[0]);
+    });
     if let Some(saved_aspect) = HVMainSignalAspect::from_command_id(&saved_aspect)
         && signal_group.supports_aspect(saved_aspect)
     {
@@ -156,18 +143,11 @@ fn main() -> ! {
             .unwrap_infallible();
     }
 
-    let mut ks_signal = KsSignal::new_multi_block(
-        pins.d11.into_output().downgrade(),
-        pins.d13.into_output().downgrade(),
-        pins.d12.into_output().downgrade(),
-    );
-
-    let mut serial_buffer: Vec<u8> = Vec::new();
+    let mut serial_buffer: ArrayVec<u8, 512> = ArrayVec::new();
 
     loop {
         wdt.feed();
 
-        // TODO: wait for interrupt here to conserve power?
         avr_device::asm::sleep();
         interrupt::free(|cs| {
             let mut interrupt_buffer = SERIAL_BUFFER.borrow(cs).borrow_mut();
@@ -180,19 +160,12 @@ fn main() -> ! {
         let maybe_position_of_newline =
             serial_buffer.iter().enumerate().find(|(_, x)| **x == b'\n');
         if let Some((position_of_newline, _)) = maybe_position_of_newline {
-            let new_buffer = serial_buffer.split_off(position_of_newline + 1);
-            let line = serial_buffer;
-            serial_buffer = new_buffer;
-
-            with_serial(|serial| {
-                for b in &line {
-                    serial.write_byte(*b);
-                } 
-            });
+            let (line, _) = serial_buffer.split_at(position_of_newline + 1);
 
             let result = get_next_command(&line);
             match result {
-                Ok((next_hv_aspect, next_ks_aspect)) => {
+                Ok(command) => {
+                    let next_hv_aspect = command.into();
                     if !signal_group.supports_aspect(next_hv_aspect) {
                         serial_writeln!("{}:E:1", SIGNAL_ID);
                     } else {
@@ -202,10 +175,6 @@ fn main() -> ! {
                         signal_group
                             .switch_to_aspect(next_hv_aspect)
                             .unwrap_infallible();
-                        ks_signal
-                            .switch_to_aspect(next_ks_aspect)
-                            .unwrap_infallible();
-
                         serial_writeln!("{}:A:{}", SIGNAL_ID, next_hv_aspect.command_id());
                     }
                 }
@@ -214,6 +183,8 @@ fn main() -> ! {
                     serial.write_str(why.as_str()).unwrap_infallible();
                 }),
             }
+
+            serial_buffer.drain(0..=position_of_newline);
         }
     }
 }
